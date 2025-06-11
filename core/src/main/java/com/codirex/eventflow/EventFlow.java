@@ -31,6 +31,45 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/**
+ * Main class for the EventFlow library. Manages event subscriptions, posting, and delivery.
+ * EventFlow allows loose coupling between components by dispatching events to subscribers.
+ *
+ * <p><b>Features:</b>
+ * <ul>
+ *   <li>Event posting and subscription.</li>
+ *   <li>Different {@link ThreadMode}s for event delivery.</li>
+ *   <li>Sticky events: New subscribers receive the last sticky event of a certain type.</li>
+ *   <li>Subscriber prioritization.</li>
+ *   <li>Optional annotation processor for optimized subscriber lookup (avoids reflection).</li>
+ *   <li>Customizable error handling.</li>
+ *   <li>Support for Android main thread.</li>
+ * </ul>
+ *
+ * <p><b>Basic Usage:</b>
+ * <pre>{@code
+ * // Get default instance
+ * EventFlow eventFlow = EventFlow.getDefault();
+ *
+ * // Register a subscriber
+ * eventFlow.register(this);
+ *
+ * // Post an event
+ * eventFlow.post(new MyEvent());
+ *
+ * // Unregister subscriber
+ * eventFlow.unregister(this);
+ *
+ * // Subscriber method
+ * @Subscribe
+ * public void onMyEvent(MyEvent event) {
+ *     // Handle event
+ * }
+ * }</pre>
+ *
+ * @see Builder
+ * @see Subscribe
+ */
 public class EventFlow {
     private static volatile EventFlow defaultInstance;
 
@@ -104,11 +143,21 @@ public class EventFlow {
         }
     }
 
+    /**
+     * Private constructor for creating an EventFlow instance without a builder, used for the default instance.
+     * Initializes with default settings.
+     */
     private EventFlow() {
 
         this(new Builder());
     }
 
+    /**
+     * Returns the default {@link EventFlow} instance. If it doesn't exist, it's created with default settings.
+     * This method is thread-safe.
+     *
+     * @return The default {@link EventFlow} instance.
+     */
     public static EventFlow getDefault() {
         if (defaultInstance == null) {
             synchronized (EventFlow.class) {
@@ -120,6 +169,28 @@ public class EventFlow {
         return defaultInstance;
     }
 
+    /**
+     * Registers the given subscriber object to receive events.
+     * Subscriber methods are identified by the {@link Subscribe} annotation.
+     * If an {@link EventFlowIndex} is available and configured, it will be used for faster subscriber method lookup.
+     * Otherwise, reflection will be used.
+     * <p>
+     * If {@link Builder#strictMode(boolean)} is enabled, this method will throw exceptions for invalid subscribers
+     * (e.g., null, or methods not conforming to rules like being public and having one parameter).
+     * Otherwise, warnings are logged.
+     * <p>
+     * If the subscriber is already registered, this call might be ignored or log a warning,
+     * depending on the internal state and strict mode.
+     * <p>
+     * If the EventFlow instance has been {@link #shutdown()}, registration attempts will be ignored or cause an exception
+     * in strict mode.
+     *
+     * @param subscriber The subscriber object. Must not be null.
+     * @throws IllegalArgumentException if subscriber is null and strict mode is enabled.
+     * @throws EventFlowException if a subscriber method is invalid (e.g., not public, wrong parameters)
+     *                            and strict mode is enabled.
+     * @throws IllegalStateException if EventFlow is shut down and strict mode is enabled.
+     */
     public void register(Object subscriber) {
         if (this.isShutdown) {
             String message =
@@ -271,6 +342,18 @@ public class EventFlow {
                                 s1.getPriority()));
     }
 
+    /**
+     * Unregisters the given subscriber object, so it will no longer receive events.
+     * If the subscriber was not registered, or is null, this method may log a warning or,
+     * in strict mode, throw an {@link IllegalArgumentException}.
+     * <p>
+     * If the EventFlow instance has been {@link #shutdown()}, unregistration attempts will be ignored or cause an exception
+     * in strict mode.
+     *
+     * @param subscriber The subscriber object to unregister. Must not be null.
+     * @throws IllegalArgumentException if subscriber is null and strict mode is enabled.
+     * @throws IllegalStateException if EventFlow is shut down and strict mode is enabled.
+     */
     public void unregister(Object subscriber) {
         if (this.isShutdown) {
             String message =
@@ -317,6 +400,28 @@ public class EventFlow {
         }
     }
 
+    /**
+     * Posts the given event to all registered subscribers that are interested in this event type.
+     * The event will be delivered to subscriber methods based on their specified {@link ThreadMode}.
+     * <p>
+     * If no subscribers are found for the event type and {@link Builder#sendNoSubscriberEvent(boolean)} is true (default),
+     * a {@link DeadEvent} wrapping the original event will be posted.
+     * <p>
+     * If the event is an instance of {@link Cancelable} and {@link Cancelable#isCanceled()} is true,
+     * further dispatching to subscribers might be halted for that event.
+     * <p>
+     * If the event is null and strict mode is enabled, an {@link IllegalArgumentException} is thrown.
+     * Otherwise, a warning is logged and the event is ignored.
+     * <p>
+     * If the EventFlow instance has been {@link #shutdown()}, posting attempts will be ignored or cause an exception
+     * in strict mode.
+     *
+     * @param event The event object to post. Must not be null.
+     * @throws IllegalArgumentException if event is null and strict mode is enabled.
+     * @throws IllegalStateException if EventFlow is shut down and strict mode is enabled.
+     * @throws EventFlowException if there's an issue with thread support (e.g., {@link MainThreadSupport} not available
+     *                            for {@link ThreadMode#MAIN}) and strict mode is enabled.
+     */
     public void post(Object event) {
         if (this.isShutdown) {
             String message =
@@ -446,6 +551,24 @@ public class EventFlow {
         }
     }
 
+    /**
+     * Posts the given event as a "sticky" event. Sticky events are stored, and any new subscriber
+     * that registers for this event type (or a supertype) and has a sticky subscriber method
+     * will immediately receive the last posted sticky event of that type.
+     * <p>
+     * After being stored, the event is also posted to currently registered subscribers like a normal event via {@link #post(Object)}.
+     * If an existing sticky event of the same type exists, it is replaced.
+     * <p>
+     * If the event is null and strict mode is enabled, an {@link IllegalArgumentException} is thrown.
+     * Otherwise, a warning is logged and the event is ignored.
+     * <p>
+     * If the EventFlow instance has been {@link #shutdown()}, posting attempts will be ignored or cause an exception
+     * in strict mode.
+     *
+     * @param event The sticky event object to post. Must not be null.
+     * @throws IllegalArgumentException if event is null and strict mode is enabled.
+     * @throws IllegalStateException if EventFlow is shut down and strict mode is enabled.
+     */
     public void postSticky(Object event) {
         if (this.isShutdown) {
             String message =
@@ -477,6 +600,13 @@ public class EventFlow {
         post(event);
     }
 
+    /**
+     * Retrieves the last posted sticky event of the given {@code eventType}.
+     *
+     * @param eventType The class of the sticky event to retrieve. Must not be null.
+     * @param <T> The type of the event.
+     * @return The sticky event of the specified type, or {@code null} if no such sticky event exists or if eventType is null.
+     */
     @SuppressWarnings("unchecked")
     public <T> T getStickyEvent(Class<T> eventType) {
         if (eventType == null) {
@@ -494,6 +624,15 @@ public class EventFlow {
         return null;
     }
 
+    /**
+     * Removes and returns the sticky event of the given {@code eventType}.
+     * Subsequent calls to {@link #getStickyEvent(Class)} for this type will return {@code null}
+     * until a new sticky event of this type is posted.
+     *
+     * @param eventType The class of the sticky event to remove. Must not be null.
+     * @param <T> The type of the event.
+     * @return The removed sticky event, or {@code null} if no such sticky event existed or if eventType is null.
+     */
     @SuppressWarnings("unchecked")
     public <T> T removeStickyEvent(Class<T> eventType) {
         if (eventType == null) {
@@ -511,6 +650,9 @@ public class EventFlow {
         return null;
     }
 
+    /**
+     * Removes all sticky events of all types.
+     */
     public void removeAllStickyEvents() {
         stickyEvents.clear();
     }
@@ -769,6 +911,18 @@ public class EventFlow {
         }
     }
 
+    /**
+     * Shuts down this EventFlow instance. After shutdown, no new subscribers can be registered,
+     * and no new events can be posted. Attempts to do so may be ignored or, in strict mode,
+     * throw an {@link IllegalStateException}.
+     * <p>
+     * This method also attempts to shut down any internally managed {@link ExecutorService} (for ASYNC tasks)
+     * and {@link BackgroundPoster} (if they were not provided by the builder).
+     * If these services were provided via the {@link Builder}, their lifecycle management remains
+     * the responsibility of the caller.
+     * <p>
+     * Calling shutdown multiple times has no additional effect.
+     */
     public void shutdown() {
         if (!this.isShutdown) {
             this.isShutdown = true;
@@ -793,6 +947,10 @@ public class EventFlow {
         }
     }
 
+    /**
+     * Builder for {@link EventFlow} instances. Allows configuration of various aspects
+     * like error handling, executor services, and logging behavior.
+     */
     public static class Builder {
         ErrorHandler errorHandler;
         ExecutorService asyncExecutorService;
@@ -805,53 +963,129 @@ public class EventFlow {
         boolean sendNoSubscriberEvent = true;
         boolean strictMode = false;
 
+        /**
+         * Default constructor for the Builder.
+         */
         public Builder() {}
 
+        /**
+         * Sets the {@link ErrorHandler} to be used by the EventFlow instance.
+         * The error handler is invoked when a subscriber method throws an exception
+         * or when an internal error occurs during event dispatch.
+         *
+         * @param handler The error handler.
+         * @return This Builder instance for chaining.
+         */
         public Builder errorHandler(ErrorHandler handler) {
             this.errorHandler = handler;
             return this;
         }
 
+        /**
+         * Sets the {@link ExecutorService} to be used for {@link ThreadMode#ASYNC} event delivery.
+         * If not provided, EventFlow will create a default cached thread pool.
+         * If provided, the lifecycle of this executor service is managed externally.
+         *
+         * @param executorService The executor service for async tasks.
+         * @return This Builder instance for chaining.
+         */
         public Builder asyncExecutorService(ExecutorService executorService) {
             this.asyncExecutorService = executorService;
             return this;
         }
 
+        /**
+         * Sets the {@link BackgroundPoster} to be used for {@link ThreadMode#BACKGROUND} event delivery.
+         * If not provided, EventFlow will use a {@link DefaultBackgroundPoster}.
+         * If provided, the lifecycle of this poster is managed externally (unless it's the default one and not provided by builder).
+         *
+         * @param backgroundPoster The background poster.
+         * @return This Builder instance for chaining.
+         */
         public Builder backgroundPoster(BackgroundPoster backgroundPoster) {
             this.backgroundPoster = backgroundPoster;
             return this;
         }
 
+        /**
+         * Sets the {@link MainThreadSupport} instance, required for delivering events on the main thread
+         * (typically the UI thread in Android applications) using {@link ThreadMode#MAIN}.
+         *
+         * @param mainThreadSupport The main thread support implementation.
+         * @return This Builder instance for chaining.
+         */
         public Builder mainThreadSupport(MainThreadSupport mainThreadSupport) {
             this.mainThreadSupport = mainThreadSupport;
             return this;
         }
 
+        /**
+         * Configures whether EventFlow should log exceptions thrown by subscriber methods.
+         * Default is true.
+         *
+         * @param log True to log exceptions, false otherwise.
+         * @return This Builder instance for chaining.
+         */
         public Builder logSubscriberExceptions(boolean log) {
             this.logSubscriberExceptions = log;
             return this;
         }
 
+        /**
+         * Configures whether EventFlow should log messages when an event is posted for which
+         * no subscribers are registered. Default is true.
+         *
+         * @param log True to log such messages, false otherwise.
+         * @return This Builder instance for chaining.
+         */
         public Builder logNoSubscriberMessages(boolean log) {
             this.logNoSubscriberMessages = log;
             return this;
         }
 
+        /**
+         * Configures whether EventFlow should post a {@link DeadEvent} if an event is posted
+         * for which an exception occurs in a subscriber. This is distinct from {@link #sendNoSubscriberEvent(boolean)}.
+         * Default is false.
+         *
+         * @param send True to post a DeadEvent on subscriber exception, false otherwise.
+         * @return This Builder instance for chaining.
+         */
         public Builder sendSubscriberExceptionEvent(boolean send) {
             this.sendSubscriberExceptionEvent = send;
             return this;
         }
 
+        /**
+         * Configures whether EventFlow should post a {@link DeadEvent} if an event is posted
+         * for which no subscribers are found. Default is true.
+         *
+         * @param send True to post a DeadEvent when no subscribers are found, false otherwise.
+         * @return This Builder instance for chaining.
+         */
         public Builder sendNoSubscriberEvent(boolean send) {
             this.sendNoSubscriberEvent = send;
             return this;
         }
 
+        /**
+         * Configures whether EventFlow should operate in strict mode. In strict mode, certain conditions
+         * that would otherwise be logged as warnings (e.g., registering a null subscriber, invalid subscriber methods)
+         * will instead throw exceptions. Default is false.
+         *
+         * @param strict True to enable strict mode, false otherwise.
+         * @return This Builder instance for chaining.
+         */
         public Builder strictMode(boolean strict) {
             this.strictMode = strict;
             return this;
         }
 
+        /**
+         * Builds and returns an {@link EventFlow} instance with the configured settings.
+         *
+         * @return A new {@link EventFlow} instance.
+         */
         public EventFlow build() {
             return new EventFlow(this);
         }
